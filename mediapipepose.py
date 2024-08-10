@@ -1,148 +1,117 @@
+import os
 import cv2
 import mediapipe as mp
 import numpy as np
-import math
-import os
 
 mp_drawing = mp.solutions.drawing_utils
 mp_pose = mp.solutions.pose
 
-class PoseKeyPoint:
-    def __init__(self, x, y, z):
-        self.x = x
-        self.y = y
-        self.z = z
-
-    def get_x(self):
-        return self.x
-
-    def get_y(self):
-        return self.y
-
-    def get_z(self):
-        return self.z
-
-def dot_product(A, B):
-    return sum(a * b for a, b in zip(A, B))
-
-def cosine_similarity(pose_world_landmarks1, pose_world_landmarks2):
-    A = [pose_world_landmarks1.get_x(), pose_world_landmarks1.get_y(), pose_world_landmarks1.get_z()]
-    B = [pose_world_landmarks2.get_x(), pose_world_landmarks2.get_y(), pose_world_landmarks2.get_z()]
-
-    return dot_product(A, B) / (math.sqrt(dot_product(A, A)) * math.sqrt(dot_product(B, B)))
-
-def normalize_landmarks(landmarks):
-    xs = [lm.get_x() for lm in landmarks]
-    ys = [lm.get_y() for lm in landmarks]
-    zs = [lm.get_z() for lm in landmarks]
+def extract_reference_landmarks_from_folder(folder_path):
+    reference_landmarks = []
+    video_filenames = []
     
-    center_x = sum(xs) / len(xs)
-    center_y = sum(ys) / len(ys)
-    center_z = sum(zs) / len(zs)
-    
-    max_dist = max([math.sqrt((lm.get_x() - center_x) ** 2 + (lm.get_y() - center_y) ** 2 + (lm.get_z() - center_z) ** 2) for lm in landmarks])
-    
-    normalized_landmarks = [PoseKeyPoint((lm.get_x() - center_x) / max_dist, (lm.get_y() - center_y) / max_dist, (lm.get_z() - center_z) / max_dist) for lm in landmarks]
-    
-    return normalized_landmarks
-
-def calculate_angle(a, b, c):
-    a = np.array([a.get_x(), a.get_y()]) 
-    b = np.array([b.get_x(), b.get_y()]) 
-    c = np.array([c.get_x(), c.get_y()]) 
-    
-    radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
-    angle = np.abs(radians * 180.0 / np.pi)
-    
-    if angle > 180.0:
-        angle = 360.0 - angle
+    for filename in os.listdir(folder_path):
+        video_path = os.path.join(folder_path, filename)
+        cap = cv2.VideoCapture(video_path)
         
-    return angle
+        print(f"Processing video: {filename}")
+        video_landmarks = []
+        
+        with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-def calculate_pose_similarity(landmarks1, landmarks2):
-    joints = [
-        (11, 13, 15),  # Left Arm
-        (12, 14, 16),  # Right Arm
-        (23, 25, 27),  # Left Leg
-        (24, 26, 28)   # Right Leg
-    ]
-    
-    angles1 = [calculate_angle(landmarks1[j[0]], landmarks1[j[1]], landmarks1[j[2]]) for j in joints]
-    angles2 = [calculate_angle(landmarks2[j[0]], landmarks2[j[1]], landmarks2[j[2]]) for j in joints]
-    
-    angle_similarities = [cosine_similarity(PoseKeyPoint(a, 0, 0), PoseKeyPoint(b, 0, 0)) for a, b in zip(angles1, angles2)]
-    return sum(angle_similarities) / len(angle_similarities)
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = pose.process(frame_rgb)
 
-def process_frame(img, reference_landmarks):
+                if results.pose_landmarks:
+                    landmarks = np.array([[lm.x, lm.y, lm.z] for lm in results.pose_landmarks.landmark])
+                    video_landmarks.append(landmarks)
+        
+        cap.release()
+
+        if video_landmarks:
+            video_mean_landmarks = np.mean(video_landmarks, axis=0)
+            reference_landmarks.append(video_mean_landmarks)
+            video_filenames.append(filename)
+            print(f"Average landmarks for {filename}: {video_mean_landmarks}")
+    
+    return reference_landmarks, video_filenames
+
+def process_frame(img, reference_landmarks, video_filenames):
     with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
-        results = pose.process(img)
+        results = pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        
+        if not results.pose_landmarks:
+            return img, None, None
+        
+        landmarks = np.array([[lm.x, lm.y, lm.z] for lm in results.pose_landmarks.landmark])
+        
+        max_similarity = -1
+        best_match_idx = -1
+        for i, ref_landmarks in enumerate(reference_landmarks):
+            similarity = calculate_cosine_similarity(ref_landmarks, landmarks)
+            if similarity > max_similarity:
+                max_similarity = similarity
+                best_match_idx = i
+        
         annotated_image = img.copy()
+        mp_drawing.draw_landmarks(
+            annotated_image,
+            results.pose_landmarks,
+            mp_pose.POSE_CONNECTIONS,
+            landmark_drawing_spec=mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
+            connection_drawing_spec=mp_drawing.DrawingSpec(color=(255, 0, 255), thickness=2))
         
-        if results.pose_landmarks:
-            mp_drawing.draw_landmarks(
-                annotated_image,
-                results.pose_landmarks,
-                mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
-                connection_drawing_spec=mp_drawing.DrawingSpec(color=(255, 0, 255), thickness=2)
-            )
-            
-            current_landmarks = [
-                PoseKeyPoint(lm.x, lm.y, lm.z)
-                for lm in results.pose_landmarks.landmark
-            ]
-            
-            if reference_landmarks:
-                normalized_landmarks1 = normalize_landmarks(current_landmarks)
-                normalized_landmarks2 = normalize_landmarks(reference_landmarks)
-                
-                similarity = calculate_pose_similarity(normalized_landmarks1, normalized_landmarks2)
-                cv2.putText(annotated_image, f'Similarity: {similarity:.2f}', (10, 30), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-                return annotated_image, similarity
-        
-        return annotated_image, None
+        return annotated_image, max_similarity, video_filenames[best_match_idx] if best_match_idx != -1 else None
 
+def calculate_cosine_similarity(ref_landmarks, curr_landmarks):
+    # 모든 랜드마크를 첫 번째 랜드마크(코)를 기준으로 정규화
+    ref_landmarks -= ref_landmarks[0]
+    curr_landmarks -= curr_landmarks[0]
+    
+    ref_array = ref_landmarks.flatten()
+    curr_array = curr_landmarks.flatten()
+    
+    dot_product = np.dot(ref_array, curr_array)
+    norm_ref = np.linalg.norm(ref_array)
+    norm_curr = np.linalg.norm(curr_array)
+    
+    cosine_similarity = dot_product / (norm_ref * norm_curr)
+    
+    return cosine_similarity
+
+# 기준 동영상이 저장된 폴더 경로 설정
+standard_video_folder_path = r"C:\Users\chaeri\Desktop\lv1_video"
+
+# 기준 동영상에서 랜드마크 평균 추출 및 파일명 저장
+reference_landmarks_avg, video_filenames = extract_reference_landmarks_from_folder(standard_video_folder_path)
+
+# 실시간 웹캠 비디오 캡처
 cap = cv2.VideoCapture(0)
-image_paths = ["C:\\Users\\chaeri\\Desktop\\spuat1.png", "C:\\Users\\chaeri\\Desktop\\spuat2.png"]
-reference_landmarks_list = []
 
-with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
-    for path in image_paths:
-        if not os.path.exists(path):
-            print(f"Warning: Image path {path} does not exist.")
-            continue
-        image = cv2.imread(path)
-        if image is None:
-            print(f"Warning: Failed to load image from {path}.")
-            continue
-        results = pose.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        if results.pose_landmarks:
-            reference_landmarks = [
-                PoseKeyPoint(lm.x, lm.y, lm.z)
-                for lm in results.pose_landmarks.landmark
-            ]
-            reference_landmarks_list.append(reference_landmarks)
-
-current_stage = 0
+SIMILARITY_THRESHOLD = 0.8  # 유사도 임계값 조정
 
 while True:
     ret, frame = cap.read()
     if not ret:
         break
-    # print(len(reference_landmarks_list))
-    if current_stage < len(reference_landmarks_list):
-        processed_frame, similarity = process_frame(frame, reference_landmarks_list[current_stage])
-        print(similarity)
-        if similarity is not None and similarity > 0.8:
-            current_stage += 1
-            if current_stage >= len(reference_landmarks_list):
-                cv2.putText(processed_frame, f'{current_stage} cherry', (10, 60), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+    
+    if reference_landmarks_avg:
+        processed_frame, similarity, best_match_video = process_frame(frame, reference_landmarks_avg, video_filenames)
+        if similarity is not None:
+            cv2.putText(processed_frame, f'Similarity: {similarity:.2f}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            
+            if best_match_video:
+                cv2.putText(processed_frame, f'Watching: {best_match_video}', (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            
+            if similarity >= SIMILARITY_THRESHOLD:
+                cv2.putText(processed_frame, 'Pose Matched!', (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
     else:
-        processed_frame, _ = process_frame(frame, None)
-        cv2.putText(processed_frame, f'{current_stage} num', (10, 60), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        processed_frame = frame.copy()
+        cv2.putText(processed_frame, 'No reference landmarks', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
     
     cv2.imshow('Pose Detection', processed_frame)
     
