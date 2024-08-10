@@ -68,7 +68,6 @@ def process_frame(img, reference_landmarks, video_filenames):
         return annotated_image, max_similarity, video_filenames[best_match_idx] if best_match_idx != -1 else None
 
 def calculate_cosine_similarity(ref_landmarks, curr_landmarks):
-    # 모든 랜드마크를 첫 번째 랜드마크(코)를 기준으로 정규화
     ref_landmarks -= ref_landmarks[0]
     curr_landmarks -= curr_landmarks[0]
     
@@ -83,13 +82,9 @@ def calculate_cosine_similarity(ref_landmarks, curr_landmarks):
     
     return cosine_similarity
 
-# 기준 동영상이 저장된 폴더 경로 설정
 standard_video_folder_path = r"C:\Users\chaeri\Desktop\lv1_video"
-
-# 기준 동영상에서 랜드마크 평균 추출 및 파일명 저장
 reference_landmarks_avg, video_filenames = extract_reference_landmarks_from_folder(standard_video_folder_path)
 
-# 실시간 웹캠 비디오 캡처
 cap = cv2.VideoCapture(0)
 
 SIMILARITY_THRESHOLD = 0.8  # 유사도 임계값 조정
