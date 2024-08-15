@@ -6,7 +6,7 @@ import numpy as np
 mp_drawing = mp.solutions.drawing_utils
 mp_pose = mp.solutions.pose
 
-#포즈 전환 감지
+#동작 전환 감지
 def detect_pose_transitions(video_path, threshold=0.1):
     cap = cv2.VideoCapture(video_path)
     transition_frames = []
